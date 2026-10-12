@@ -2,7 +2,7 @@ name: Warm mixelite.com cache
 
 on:
   schedule:
-    # every 15 minutes, off the busy :00 mark; 07:07 catches the daily 07:00/07:05 UTC scheduled posts
+    # every 15 minutes, off the busy :00 mark (GitHub may run a few minutes late); 07:07 catches the daily 07:00/07:05 UTC scheduled posts
     - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
