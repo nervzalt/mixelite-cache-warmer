@@ -1,40 +1,60 @@
 name: Warm mixelite.com cache
 
+# One run keeps watch for ~5.5 hours (a check every 15 minutes), then starts the next run itself.
+# GitHub's own timer (below) is only a backup that restarts the chain if it ever breaks; it does
+# nothing while a watch run is already going. Switch off = Disable workflow (a running watch stops too).
 on:
   schedule:
-    # every 15 minutes, off the busy :00 mark (GitHub may run a few minutes late); 07:07 catches the daily 07:00/07:05 UTC scheduled posts
-    - cron: "7,22,37,52 * * * *"
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       force:
-        description: "Warm even if the site looks warm"
+        description: "Warm right now even if the site looks warm"
         type: boolean
         default: false
-
-concurrency:
-  group: warm
-  cancel-in-progress: false
+      from_run:
+        description: "(internal) run that started this one"
+        type: string
+        default: ""
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   warm:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install --quiet requests
-      - name: Check and warm
-        run: python warm.py ${{ inputs.force && '--force' || '' }}
+      - name: Is a watch run already going?
+        id: guard
+        run: |
+          busy=$(gh run list -R "$GITHUB_REPOSITORY" -w warm.yml -s in_progress --json databaseId \
+            --jq "[.[].databaseId | select(. != ${{ github.run_id }} and . != (\"${{ inputs.from_run }}\" | tonumber? // 0))] | length")
+          echo "busy=$busy" >> "$GITHUB_OUTPUT"
+          [ "$busy" -gt 0 ] && echo "Another watch run is already going; nothing to do." || true
+      - name: Warm now (manual, forced)
+        if: inputs.force
+        run: python warm.py --force
+      - name: Watch for ~5.5 hours
+        if: ${{ !inputs.force && steps.guard.outputs.busy == '0' }}
+        run: python warm.py --loop 330
+      - name: Start the next watch run
+        if: ${{ always() && !cancelled() && !inputs.force && steps.guard.outputs.busy == '0' }}
+        run: |
+          [ "$(gh api repos/$GITHUB_REPOSITORY/actions/workflows/warm.yml --jq .state)" = active ] || exit 0
+          gh workflow run warm.yml -R "$GITHUB_REPOSITORY" -f from_run=${{ github.run_id }}
 
-  # GitHub pauses scheduled jobs in a repo with no commits for 60 days. One tiny commit a week keeps it running.
+  # GitHub pauses a repo's workflows after 60 days with no commits. One tiny commit a week keeps it running.
   keepalive:
     runs-on: ubuntu-latest
-    if: github.event_name == 'schedule'
     steps:
       - uses: actions/checkout@v4
       - name: Weekly heartbeat commit

@@ -80,8 +80,8 @@ def summary(text):
             f.write(text + "\n")
 
 
-def main():
-    force = "--force" in sys.argv
+def check_and_warm(force):
+    stop.clear()
     t_start = time.time()
 
     checks = []
@@ -148,9 +148,48 @@ def main():
     return 0
 
 
-if __name__ == "__main__":
+def once(force):
     try:
-        sys.exit(main())
+        return check_and_warm(force)
     except Blocked as e:
         summary(f"STOPPED: the site's firewall challenged the cache check ({e}). Not retrying.")
-        sys.exit(1)
+        return 1
+    except requests.RequestException as e:
+        summary(f"Could not reach the site ({type(e).__name__}); will try again at the next check.")
+        return 0
+
+
+def switched_off():
+    """True when Max disabled the workflow in the Actions tab (so a running loop stops too)."""
+    repo, token = os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GH_TOKEN")
+    if not (repo and token):
+        return False
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/actions/workflows/warm.yml",
+                         headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        return r.ok and r.json().get("state") != "active"
+    except requests.RequestException:
+        return False
+
+
+def loop(minutes):
+    """Check every 15 minutes for `minutes`, then exit (the workflow starts the next run).
+    GitHub's own 15-minute timer proved unreliable, so one run keeps watch for ~5.5 hours."""
+    end, failed = time.time() + minutes * 60, 0
+    while time.time() < end:
+        if switched_off():
+            summary("Workflow was switched off: stopping.")
+            return 0
+        t = time.time()
+        print(time.strftime("%H:%M UTC", time.gmtime()), "check")
+        if once(False):
+            failed = 1
+            time.sleep(15 * 60)  # after a firewall answer, wait an extra round before looking again
+        time.sleep(max(0, 15 * 60 - (time.time() - t)))
+    return failed
+
+
+if __name__ == "__main__":
+    if "--loop" in sys.argv:
+        sys.exit(loop(int(sys.argv[sys.argv.index("--loop") + 1])))
+    sys.exit(once("--force" in sys.argv))
