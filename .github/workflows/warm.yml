@@ -1,0 +1,50 @@
+name: Warm mixelite.com cache
+
+on:
+  schedule:
+    # every 15 minutes, off the busy :00 mark; 07:07 catches the daily 07:00/07:05 UTC scheduled posts
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Warm even if the site looks warm"
+        type: boolean
+        default: false
+
+concurrency:
+  group: warm
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet requests
+      - name: Check and warm
+        run: python warm.py ${{ inputs.force && '--force' || '' }}
+
+  # GitHub pauses scheduled jobs in a repo with no commits for 60 days. One tiny commit a week keeps it running.
+  keepalive:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Weekly heartbeat commit
+        run: |
+          week=$(date -u +%G-W%V)
+          if [ "$(cat last-alive.txt 2>/dev/null)" != "$week" ]; then
+            echo "$week" > last-alive.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898283+github-actions[bot]@users.noreply.github.com"
+            git add last-alive.txt
+            git commit -m "keepalive $week"
+            git push
+          fi
