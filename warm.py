@@ -139,7 +139,7 @@ def main():
     cold = [r for r in ok if r[3] != "HIT"]
     slow = [r for r in ok if r[4] > 1.5]
     bad = [r for r in results if r[2] != 200]
-    summary(f"Site was cold, so it was re-warmed: {len(ok)} page loads ({len(urls)} pages x desktop + phone) "
+    summary(f"{'Forced warm' if force else 'Site was cold, so it was re-warmed'}: {len(ok)} page loads ({len(urls)} pages x desktop + phone) "
             f"in {mins:.1f} min. {len(cold)} were not cached before this run ({len(slow)} took over 1.5 s).")
     if bad:
         summary(f"{len(bad)} loads did not return a normal page (redirects/errors), first few:")
