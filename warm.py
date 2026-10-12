@@ -3,7 +3,7 @@
 Why: any post/page update or WP Rocket purge on mixelite.com wipes the WHOLE Cloudflare (Rocket.net) cache and
 WP Rocket's page cache. Cold pages take 2-3 s instead of ~0.2 s. This checks 3 canary pages; if 2+ are not
 cached, it fetches every page in the sitemaps once as a desktop browser and once as a phone (the site keeps a
-separate mobile cache), max 4 at a time, gently.
+separate mobile cache), 2 at a time, gently (4 at a time hit the site's rate limit after ~100 loads).
 
 Hard rule: if the firewall answers 403 with `cf-mitigated: challenge` (or 429), stop at once and fail.
 
@@ -29,8 +29,8 @@ HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;
 SITEMAPS = ("post", "page", "product", "wffn_landing", "wffn_optin", "category")
 FIRST = ["/", "/join/", "/7-day-music-producer-course-zero-to-pro/", "/courses/", "/sounds/", "/blog/"]
 SKIP = re.compile(r"/(cart|checkout|my-account|order-received|thank-you|wp-admin|wp-login)|/wp-content/|\?")
-WORKERS = 4
-PAUSE = 1.0  # seconds each worker waits between requests (so at most ~4 requests a second)
+WORKERS = 2
+PAUSE = 1.5  # seconds each worker waits between requests (at most ~80 requests a minute)
 
 
 class Blocked(Exception):
@@ -49,7 +49,8 @@ def get(url, ua):
     took = time.perf_counter() - t0
     if (r.status_code == 403 and "challenge" in r.headers.get("cf-mitigated", "").lower()) or r.status_code == 429:
         stop.set()
-        raise Blocked(f"{r.status_code} {r.headers.get('cf-mitigated', '')} on {url}")
+        info = {k: v for k, v in r.headers.items() if k.lower() in ("cf-mitigated", "retry-after", "server", "cf-ray")}
+        raise Blocked(f"{r.status_code} {info} on {url}")
     return r.status_code, r.headers.get("cf-cache-status", "-").upper(), took
 
 
