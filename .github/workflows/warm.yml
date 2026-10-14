@@ -1,6 +1,6 @@
 name: Warm mixelite.com cache
 
-# One run keeps watch for ~5.5 hours (a check every 15 minutes), then starts the next run itself.
+# One run keeps watch for ~5.5 hours (a check every 5 minutes), then starts the next run itself.
 # GitHub's own timer (below) is only a backup that restarts the chain if it ever breaks; it does
 # nothing while a watch run is already going. Switch off = Disable workflow (a running watch stops too).
 on:

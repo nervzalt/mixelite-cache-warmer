@@ -173,7 +173,7 @@ def switched_off():
 
 
 def loop(minutes):
-    """Check every 15 minutes for `minutes`, then exit (the workflow starts the next run).
+    """Check every 5 minutes for `minutes`, then exit (the workflow starts the next run).
     GitHub's own 15-minute timer proved unreliable, so one run keeps watch for ~5.5 hours."""
     end, failed = time.time() + minutes * 60, 0
     while time.time() < end:
@@ -185,7 +185,7 @@ def loop(minutes):
         if once(False):
             failed = 1
             time.sleep(15 * 60)  # after a firewall answer, wait an extra round before looking again
-        time.sleep(max(0, 15 * 60 - (time.time() - t)))
+        time.sleep(max(0, 5 * 60 - (time.time() - t)))
     return failed
 
 
