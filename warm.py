@@ -28,7 +28,8 @@ HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;
            "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br"}
 SITEMAPS = ("post", "page", "product", "wffn_landing", "wffn_optin", "category")
 FIRST = ["/", "/join/", "/7-day-music-producer-course-zero-to-pro/", "/courses/", "/sounds/", "/blog/"]
-SKIP = re.compile(r"/(cart|checkout|my-account|order-received|thank-you|wp-admin|wp-login)|/wp-content/|\?")
+# Never load a checkout/cart/upsell page: a cookie-free visit there is what once got an empty-cart checkout cached.
+SKIP = re.compile(r"checkout|/cart|my-account|order-received|thank-you|/offer/|/upsell|wp-admin|wp-login|/wp-content/|\?")
 WORKERS = 2
 PAUSE = 1.5  # seconds each worker waits between requests (at most ~80 requests a minute)
 
