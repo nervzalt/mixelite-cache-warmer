@@ -29,7 +29,21 @@ HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;
 SITEMAPS = ("post", "page", "product", "wffn_landing", "wffn_optin", "category")
 FIRST = ["/", "/join/", "/7-day-music-producer-course-zero-to-pro/", "/courses/", "/sounds/", "/blog/"]
 # Never load a checkout/cart/upsell page: a cookie-free visit there is what once got an empty-cart checkout cached.
-SKIP = re.compile(r"checkout|/cart|my-account|order-received|thank-you|/offer/|/upsell|wp-admin|wp-login|/wp-content/|\?")
+NEVER = r"checkout|/cart|add-to-cart|my-account|order-received|thank-you|/offer/|/upsell|wp-admin|wp-login|/wp-content/"
+SKIP = re.compile(NEVER + r"|\?")
+# YouTube links carry ?vid= (and some ?f=): Cloudflare caches each exact link separately, and WP Rocket never saves
+# capitalised paths like /Free/, so after a purge the first viewer of each link waits 2-3 s. Warm the exact links
+# viewers use (youtube-links.txt, busiest first; rebuilt by tools/refresh_youtube_links.py). They may have "?".
+YT_SKIP = re.compile(NEVER)
+
+
+def youtube_links():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube-links.txt")
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as f:
+        return [SITE + line.strip() for line in f
+                if line.startswith("/") and not YT_SKIP.search(line.strip())]
 WORKERS = 2
 PAUSE = 1.5  # seconds each worker waits between requests (at most ~80 requests a minute)
 
@@ -97,9 +111,10 @@ def check_and_warm(force):
         return 0
 
     urls, seen = [], set()
-    for u in [SITE + p for p in FIRST] + sitemap_urls():
+    yt = set(youtube_links())
+    for u in [SITE + p for p in FIRST] + youtube_links() + sitemap_urls():
         u = u.strip()
-        if u in seen or SKIP.search(u[len(SITE):]):
+        if u in seen or (u not in yt and SKIP.search(u[len(SITE):])):
             continue
         seen.add(u)
         urls.append(u)
