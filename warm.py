@@ -41,9 +41,20 @@ def youtube_links():
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "youtube-links.txt")
     if not os.path.exists(path):
         return []
+    links = []
     with open(path, encoding="utf-8") as f:
-        return [SITE + line.strip() for line in f
-                if line.startswith("/") and not YT_SKIP.search(line.strip())]
+        for line in f:
+            link = line.strip()
+            if not link.startswith("/") or YT_SKIP.search(link):
+                continue
+            links.append(SITE + link)
+            # The site's clean-URLs snippet 301s /Free/?vid=x and /join?vid=x to the lowercase, slash-ended address;
+            # warm that page too, not just the redirect.
+            p, q = (link.split("?", 1) + [""])[:2]
+            clean = p.lower() if p.endswith("/") else p.lower() + "/"
+            if clean != p and not re.search(r"\.[A-Za-z0-9]{1,8}$|^/(wp-|freebie/)", p, re.I):
+                links.append(SITE + clean + ("?" + q if q else ""))
+    return links
 WORKERS = 2
 PAUSE = 1.5  # seconds each worker waits between requests (at most ~80 requests a minute)
 
