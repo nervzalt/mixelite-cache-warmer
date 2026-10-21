@@ -5,6 +5,14 @@ WP Rocket's page cache. Cold pages take 2-3 s instead of ~0.2 s. This checks 3 c
 cached, it fetches every page in the sitemaps once as a desktop browser and once as a phone (the site keeps a
 separate mobile cache), 2 at a time, gently (4 at a time hit the site's rate limit after ~100 loads).
 
+Two layers, checked separately for desktop AND phone (2026-10-21):
+- the edge (Cloudflare, per location and per device type): clean-URL loads fill it where this runner is;
+- the server's own page copies (WP Rocket, one per device), which every OTHER location falls back to: a real phone that
+  missed the edge waited 2.3-3.6 s for a full rebuild because the server had no phone copy, although this warmer had just
+  loaded the page as a phone (desktop copies were there; a phone that misses the edge rebuilds them in ~2.5 s).
+  A load with a unique ?vid= (ignored by WP Rocket, not by Cloudflare) always reaches the server: it shows whether the
+  server has the copy ("Debug: cached@" in the page) and makes the server save one if it had none.
+
 Hard rule: if the firewall answers 403 with `cf-mitigated: challenge` (or 429), stop at once and fail.
 
 Usage: python warm.py          check, warm only if cold
@@ -67,7 +75,9 @@ stop = threading.Event()
 
 
 def get(url, ua):
-    """One cookie-free GET. Raises Blocked on a firewall challenge or rate limit."""
+    """One cookie-free GET -> (code, edge status, seconds, saved): saved = True when the server sent its saved copy
+    (WP Rocket's "Debug: cached@" mark), False when it built the page, None when unknown (edge HIT / not a page).
+    Raises Blocked on a firewall challenge or rate limit."""
     if stop.is_set():
         return None
     t0 = time.perf_counter()
@@ -77,7 +87,23 @@ def get(url, ua):
         stop.set()
         info = {k: v for k, v in r.headers.items() if k.lower() in ("cf-mitigated", "retry-after", "server", "cf-ray")}
         raise Blocked(f"{r.status_code} {info} on {url}")
-    return r.status_code, r.headers.get("cf-cache-status", "-").upper(), took
+    edge = r.headers.get("cf-cache-status", "-").upper()
+    saved = None
+    if r.status_code == 200 and edge != "HIT":
+        try:
+            saved = "Debug: cached@" in r.text[-4000:]
+        except Exception:
+            saved = None
+    return r.status_code, edge, took, saved
+
+
+def fresh(url):
+    """The same page with a never-seen ?vid=: Cloudflare can't answer it from its cache, WP Rocket ignores vid."""
+    fresh.n += 1
+    return url + ("&" if "?" in url else "?") + "vid=w%d%04d" % (int(time.time()), fresh.n % 10000)
+
+
+fresh.n = 0
 
 
 def sitemap_urls():
@@ -92,10 +118,12 @@ def sitemap_urls():
 
 
 def canaries():
-    blog = next((u for u in re.findall(r"<loc>(https://mixelite\.com/blog/[^<]+)</loc>",
-                                       requests.get(f"{SITE}/post-sitemap.xml", headers={"User-Agent": DESKTOP},
-                                                    timeout=60).text)), f"{SITE}/blog/")
-    return [f"{SITE}/", blog, f"{SITE}/courses/"]
+    posts = re.findall(r"<loc>(https://mixelite\.com/blog/[^<]+)</loc>",
+                       requests.get(f"{SITE}/post-sitemap.xml", headers={"User-Agent": DESKTOP}, timeout=60).text)
+    blog = posts[0] if posts else f"{SITE}/blog/"
+    mid = posts[len(posts) // 2] if posts else f"{SITE}/blog/"
+    # edge test pages, server test pages
+    return [f"{SITE}/", blog, f"{SITE}/courses/"], [f"{SITE}/", blog, mid]
 
 
 def summary(text):
@@ -109,16 +137,33 @@ def summary(text):
 def check_and_warm(force):
     stop.clear()
     t_start = time.time()
+    edge_pages, server_pages = canaries()
+    devices = (("desktop", DESKTOP), ("phone", MOBILE))
 
-    checks = []
-    for u in canaries():
-        code, status, took = get(u, DESKTOP)
-        checks.append(status)
-        print(f"canary {status:8} {took:5.2f}s {u}")
-        time.sleep(0.5)
-    cold_canaries = sum(s != "HIT" for s in checks)
-    if cold_canaries < 2 and not force:
-        summary(f"Site is warm ({3 - cold_canaries} of 3 test pages cached). Nothing to do.")
+    # 1) the edge where this runner is (clean URLs), desktop and phone
+    edge_cold = {}
+    for name, ua in devices:
+        n = 0
+        for u in edge_pages:
+            code, status, took, _ = get(u, ua)
+            n += status != "HIT"
+            print(f"edge   {name:7} {status:8} {took:5.2f}s {u}")
+            time.sleep(0.5)
+        edge_cold[name] = n >= 2
+    # 2) the server's saved copies (a unique ?vid= always reaches the server), desktop and phone
+    server_cold = {}
+    for name, ua in devices:
+        n = 0
+        for u in server_pages:
+            code, status, took, saved = get(fresh(u), ua)
+            n += saved is False
+            word = "saved copy" if saved else ("REBUILT" if saved is False else f"{code} {status}")
+            print(f"server {name:7} {word:10} {took:5.2f}s {u}")
+            time.sleep(0.5)
+        server_cold[name] = n >= 2
+    cold_parts = [f"edge {d}" for d in edge_cold if edge_cold[d]] + [f"server {d}" for d in server_cold if server_cold[d]]
+    if not cold_parts and not force:
+        summary("Site is warm (edge + server copies, desktop + phone). Nothing to do.")
         return 0
 
     urls, seen = [], set()
@@ -129,23 +174,36 @@ def check_and_warm(force):
             continue
         seen.add(u)
         urls.append(u)
-    jobs = [(u, ua) for u in urls for ua in (DESKTOP, MOBILE)]
-    print(f"cold ({cold_canaries} of 3 test pages not cached): warming {len(urls)} pages x desktop+mobile")
+    jobs = [(u, name, ua) for u in urls for name, ua in devices]
+    print(f"cold ({', '.join(cold_parts) or 'forced'}): warming {len(urls)} pages x desktop+phone")
 
-    results, lock = [], threading.Lock()
+    results, extra, lock = [], [], threading.Lock()
 
     def work(job):
         if stop.is_set():
             return
-        u, ua = job
+        u, name, ua = job
         try:
             res = get(u, ua)
         except requests.RequestException as e:
-            res = ("ERR", type(e).__name__, 0.0)
-        if res:
-            with lock:
-                results.append((u, ua, *res))
+            res = ("ERR", type(e).__name__, 0.0, None)
+        if not res:
+            return
+        with lock:
+            results.append((u, name, *res))
         time.sleep(PAUSE)
+        # The edge answered (HIT), so the server was not asked: when the server's copies for this device looked cold,
+        # make sure it has one (other locations and devices fall back to it). A load that reached the server already
+        # left a copy there (it either sent its copy or built and saved one).
+        if res[0] == 200 and res[1] == "HIT" and (server_cold[name] or force) and not stop.is_set():
+            try:
+                r2 = get(fresh(u), ua)
+            except requests.RequestException as e:
+                r2 = ("ERR", type(e).__name__, 0.0, None)
+            if r2:
+                with lock:
+                    extra.append((u, name, *r2))
+            time.sleep(PAUSE)
 
     blocked = None
     with ThreadPoolExecutor(WORKERS) as pool:
@@ -163,15 +221,23 @@ def check_and_warm(force):
         return 1
 
     ok = [r for r in results if r[2] == 200]
-    cold = [r for r in ok if r[3] != "HIT"]
-    slow = [r for r in ok if r[4] > 1.5]
     bad = [r for r in results if r[2] != 200]
-    summary(f"{'Forced warm' if force else 'Site was cold, so it was re-warmed'}: {len(ok)} page loads ({len(urls)} pages x desktop + phone) "
-            f"in {mins:.1f} min. {len(cold)} were not cached before this run ({len(slow)} took over 1.5 s).")
+    summary(f"{'Forced warm' if force else 'Site was cold (' + ', '.join(cold_parts) + '), so it was re-warmed'}: "
+            f"{len(ok)} page loads ({len(urls)} pages x desktop + phone) + {len(extra)} server loads in {mins:.1f} min.")
+    for name, _ in devices:
+        mine = [r for r in ok if r[1] == name]
+        hit = sum(r[3] == "HIT" for r in mine)
+        reached = [r for r in mine if r[3] != "HIT"]
+        sv = sum(r[5] is True for r in reached)
+        rb = sum(r[5] is False for r in reached)
+        ex = [r for r in extra if r[1] == name and r[2] == 200]
+        summary(f"- {name}: edge already had {hit}; {len(reached)} went to the server ({sv} from its copy, {rb} rebuilt, "
+                f"{sum(r[4] > 1.5 for r in reached)} over 1.5 s); extra server loads {len(ex)} "
+                f"({sum(r[5] is True for r in ex)} had a copy, {sum(r[5] is False for r in ex)} rebuilt).")
     if bad:
         summary(f"{len(bad)} loads did not return a normal page (redirects/errors), first few:")
-        for u, ua, code, status, _ in bad[:10]:
-            summary(f"- {code} {'phone' if ua == MOBILE else 'desktop'} {u}")
+        for u, name, code, status, *_ in bad[:10]:
+            summary(f"- {code} {name} {u}")
     return 0
 
 
