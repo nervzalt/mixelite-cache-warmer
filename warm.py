@@ -35,7 +35,9 @@ MOBILE = ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/60
 HEADERS = {"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
            "Accept-Language": "en-US,en;q=0.9", "Accept-Encoding": "gzip, deflate, br"}
 SITEMAPS = ("post", "page", "product", "wffn_landing", "wffn_optin", "category")
-FIRST = ["/", "/join/", "/7-day-music-producer-course-zero-to-pro/", "/courses/", "/sounds/", "/blog/"]
+# (llms.txt and robots.txt are built by Rank Math on every uncached request, ~2.3 s, and are not in any sitemap; Google's
+# Lighthouse gives up on llms.txt after 2 s, so right after a purge its AI-agent check failed. Warm them first.)
+FIRST = ["/llms.txt", "/robots.txt", "/", "/join/", "/7-day-music-producer-course-zero-to-pro/", "/courses/", "/sounds/", "/blog/"]
 # Never load a checkout/cart/upsell page: a cookie-free visit there is what once got an empty-cart checkout cached.
 NEVER = r"checkout|/cart|add-to-cart|my-account|order-received|thank-you|/offer/|/upsell|wp-admin|wp-login|/wp-content/"
 SKIP = re.compile(NEVER + r"|\?")
@@ -195,7 +197,7 @@ def check_and_warm(force):
         # The edge answered (HIT), so the server was not asked: when the server's copies for this device looked cold,
         # make sure it has one (other locations and devices fall back to it). A load that reached the server already
         # left a copy there (it either sent its copy or built and saved one).
-        if res[0] == 200 and res[1] == "HIT" and (server_cold[name] or force) and not stop.is_set():
+        if res[0] == 200 and res[1] == "HIT" and (server_cold[name] or force) and not stop.is_set() and not u.endswith(".txt"):
             try:
                 r2 = get(fresh(u), ua)
             except requests.RequestException as e:
